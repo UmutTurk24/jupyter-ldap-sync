@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jupyter-ldap-sync"
+version = "0.1.0"
+description = "JupyterHub LDAP Sync for Davidson College"
+authors = [
+    {name = "Umut Turk", email = "umturk@davidson.edu"},
+    {name = "Michael Blackmon", email = "miblackmon@davidson.edu"}
+]
+dependencies = [
+    "python-ldap", 
+    "tornado"
+    ]
+readme = "README.md"
