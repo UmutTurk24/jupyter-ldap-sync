@@ -51,33 +51,78 @@ async def sync_users(ldap_url, base_dn, ldap_username, ldap_password, ldap_group
     # Filter Students
     students = list(map(lambda x: x.split(',')[0].split('=')[1], filter(lambda x: 'OU=Class_' in x, member_dns)))
 
-
-    print(faculty)
-    print(students)
-
-
-
     # Extract CN from DN
     members = list(map(lambda x: x.split(',')[0].split('=')[1], member_dns))
 
     # Initialize JupyterHub API connection
-    # client = AsyncHTTPClient()
-    # headers = HTTPHeaders({
-    #     'accept': 'application/json',
-    #     'Content-Type': 'application/json',
-    #     'authorization': 'token debf1479c83f48bb9967ba2871e9ced4',
-    # })
+    client = AsyncHTTPClient()
+    url = f'{jupyter_url}/hub/api/users'
+    headers = HTTPHeaders({
+        'accept': 'application/json',
+        'Content-Type': 'application/json',
+        'authorization': 'token debf1479c83f48bb9967ba2871e9ced4',
+    })
 
-    # # send a request to the JupyterHub API
-    # request = HTTPRequest(
-    #     url="https://jupyter.davidson.edu/hub/api/users",
-    #     method='GET',
-    #     headers=headers,
-    # )
-    # resp = await client.fetch(request)
-    # print(resp.body)
-    # return resp.body
+    response = await client.fetch(HTTPRequest(
+        url=url,
+        method='GET',
+        headers=headers,
+    ))
 
+    if response.status_code == 404:
+        app_log.info(f"Group not found in JupyterHub. Creating group {ldap_group}.")
+        response = client.fetch(HTTPRequest(
+            url=f'{jupyter_url}/hub/api/groups',
+            method='POST',
+            headers=headers,
+        ))
+        print(response.text)
+    
+    url = f"{jupyter_url}/hub/api/groups/{args.group}/users"
+
+    headers = {
+        'accept': 'application/json',
+        'Content-Type': 'application/json',
+        'authorization': f'token {token}',
+    }
+
+    # json.dumps(users) does not work.  
+    json_data = { 'users': args.users[0].split(",") }  
+    response = requests.post(url, headers=headers, json=json_data)
+
+    if response.status_code == 201:
+        print("Successfully added users")
+    elif response.status_code == 400:
+        print("Failed to add users")
+        print(response.text)
+    elif response.status_code == 404:
+        print("Group not found")
+        print(response.text)
+
+    return resp.body
+
+    # Check if the group exists in JupyterHub, create the group if needed
+
+    url = f"https://jupyter.davidson.edu/hub/api/groups/{args.group}/users"
+
+    headers = {
+        'accept': 'application/json',
+        'Content-Type': 'application/json',
+        'authorization': f'token {config["token"]}',
+    }
+
+    # json.dumps(users) does not work.  
+    json_data = { 'users': args.users[0].split(",") }  
+    response = requests.post(url, headers=headers, json=json_data)
+
+    if response.status_code == 201:
+        print("Successfully added users")
+    elif response.status_code == 400:
+        print("Failed to add users")
+        print(response.text)
+    elif response.status_code == 404:
+        print("Group not found")
+        print(response.text)
 
 
 
@@ -127,6 +172,7 @@ def main():
     )
     define(
         "jupyter_url",
+        default="https://jupyter.davidson.edu",
         help=dedent(
             """
             The JupyterHub API URL.
