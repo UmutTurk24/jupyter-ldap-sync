@@ -19,12 +19,11 @@ from tornado.ioloop import IOLoop, PeriodicCallback
 from tornado.log import app_log
 from tornado.options import define, options, parse_command_line
 
-
-
-async def sync_users(ldap_url, base_dn, ldap_username, ldap_password, ldap_group, jupyter_url, token, sync_every, concurrency):
-    print("sync_users:", ldap_url, base_dn, ldap_username, ldap_password, ldap_group, jupyter_url, token, sync_every, concurrency)
-
-    # Initialize ldap connection
+async def get_ldap_users(ldap_url, base_dn, ldap_username, ldap_password, ldap_group):
+    """
+    Get the users from the LDAP group
+    """
+     # Initialize ldap connection
     try:
         l = ldap.initialize(ldap_url)
         l.set_option(ldap.OPT_REFERRALS, 0)
@@ -38,93 +37,209 @@ async def sync_users(ldap_url, base_dn, ldap_username, ldap_password, ldap_group
 
     # Check if the group exists in LDAP
     if not any(isinstance(sublist[0], str) for sublist in group_members if sublist):
-        print(f"Group '{ldap_group}' not found in LDAP server")
+        app_log.error(f"Group '{ldap_group}' not found in LDAP server")
         exit()
     
     # Turn from bytes to string
     member_dns = list(map(lambda x: x.decode('utf-8'), group_members[0][1]['member']))
-
-    # Filter Faculty
-    faculty = list(map(lambda x: x.split(',')[0].split('=')[1], filter(lambda x: 'OU=Faculty' in x, member_dns)))
-
-
-    # Filter Students
-    students = list(map(lambda x: x.split(',')[0].split('=')[1], filter(lambda x: 'OU=Class_' in x, member_dns)))
-
     # Extract CN from DN
     members = list(map(lambda x: x.split(',')[0].split('=')[1], member_dns))
 
-    # Initialize JupyterHub API connection
-    client = AsyncHTTPClient()
-    url = f'{jupyter_url}/hub/api/users'
-    headers = HTTPHeaders({
-        'accept': 'application/json',
-        'Content-Type': 'application/json',
-        'authorization': 'token debf1479c83f48bb9967ba2871e9ced4',
-    })
+    return members
 
-    response = await client.fetch(HTTPRequest(
-        url=url,
-        method='GET',
-        headers=headers,
-    ))
+async def test_jupyterhub_connection(jupyter_url, token):
+    """
+    Test the connection to the JupyterHub
+    """
+    try:
+        await AsyncHTTPClient().fetch(HTTPRequest(
+            url=f'{jupyter_url}/hub/api',
+            method='GET',
+            headers=HTTPHeaders({
+                'accept': 'application/json',
+                'Content-Type': 'application/json',
+                'authorization': f'token {token}',
+            }),
+        ))
+    except Exception as e:
+        app_log.error(f"Error connecting to JupyterHub: {e}")
+        exit()
 
-    if response.status_code == 404:
-        app_log.info(f"Group not found in JupyterHub. Creating group {ldap_group}.")
-        response = client.fetch(HTTPRequest(
-            url=f'{jupyter_url}/hub/api/groups',
-            method='POST',
+async def test_jupyterhub_group(jupyter_url, token, ldap_group, client):
+    
+    try: 
+        url = f'{jupyter_url}/hub/api/groups/{ldap_group}'
+        headers = HTTPHeaders({
+            'accept': 'application/json',
+            'authorization': f'token {token}',
+        })
+        
+        await client.fetch(HTTPRequest(
+            url=url,
+            method='GET',
             headers=headers,
         ))
-        print(response.text)
+    except Exception as e:        
+        app_log.info(f"Error retrieving the group information from JupyterHub: {e}\n \
+                     Creating group {ldap_group} in JupyterHub.")
+        
+        url = f'{jupyter_url}/hub/api/groups/{ldap_group}'
+        headers = HTTPHeaders({
+            'accept': 'application/json',
+            'Content-Type': 'application/json',
+            'authorization': f'token {token}',
+        })
+        response = await client.fetch(HTTPRequest(
+            url=url,
+            method='POST',
+            headers=headers,
+            body=json.dumps({}), # Expects a JSON object
+        ))
     
-    url = f"{jupyter_url}/hub/api/groups/{args.group}/users"
+async def get_current_group_members(jupyter_url, token, ldap_group, client):
+    """
+    Get the current members of the group in JupyterHub
+    """
+    current_members = []
+    try:
+        url = f"{jupyter_url}/hub/api/groups/{ldap_group}"
+        headers = {
+            'accept': 'application/json',
+            'Content-Type': 'application/json',
+            'authorization': f'token {token}',
+        }
+        response = await client.fetch(HTTPRequest(
+            url=url,
+            method='GET',
+            headers=headers,
+        ))
+        current_members = json.loads(response.body.decode('utf-8'))['users']
+    except Exception as e:
+        app_log.error(f"Error retrieving the current members of the group: {e}")
+        exit()
+    return current_members
 
-    headers = {
-        'accept': 'application/json',
-        'Content-Type': 'application/json',
-        'authorization': f'token {token}',
-    }
+async def get_all_users(jupyter_url, token, client):
+    """
+    Get all the users in JupyterHub
+    """
+    all_users = []
+    try:
+        url = f"{jupyter_url}/hub/api/users"
+        headers = {
+            'accept': 'application/json',
+            'Content-Type': 'application/json',
+            'authorization': f'token {token}',
+        }
+        response = await client.fetch(HTTPRequest(
+            url=url,
+            method='GET',
+            headers=headers,
+        ))
+        all_users = list(map(lambda x: x['name'], json.loads(response.body.decode('utf-8'))))
+    except Exception as e:
+        app_log.error(f"Error retrieving the current users of the JupyterHub: {e}")
+        exit()
+    return all_users
 
-    # json.dumps(users) does not work.  
-    json_data = { 'users': args.users[0].split(",") }  
-    response = requests.post(url, headers=headers, json=json_data)
+async def create_users(jupyter_url, token, users_to_create, client):  
+    """
+    Create users in JupyterHub
+    """
+    for member in users_to_create:
+        try:
+            url = f"{jupyter_url}/hub/api/users/{member}"
+            headers = {
+                'accept': 'application/json',
+                'Content-Type': 'application/json',
+                'authorization': f'token {token}',
+            }
+            await client.fetch(HTTPRequest(
+                url=url,
+                method='POST',
+                headers=headers,
+                body=json.dumps({ 'name': member }),
+            ))
+        except Exception as e:
+            app_log.error(f"Error creating user {member} in JupyterHub: {e}")
 
-    if response.status_code == 201:
-        print("Successfully added users")
-    elif response.status_code == 400:
-        print("Failed to add users")
-        print(response.text)
-    elif response.status_code == 404:
-        print("Group not found")
-        print(response.text)
+async def add_remove_users(jupyter_url, token, ldap_group, members_to_add, members_to_remove, client):
+    """
+    Add or remove users from the group in JupyterHub
+    """
+    try: 
+        url = f"{jupyter_url}/hub/api/groups/{ldap_group}/users"
 
-    return resp.body
+        headers = {
+            'accept': 'application/json',
+            'Content-Type': 'application/json',
+            'authorization': f'token {token}',
+        }
+        json_data = json.dumps({ 'users': members_to_add })
+        print(json_data)
+        response = await client.fetch(HTTPRequest(
+            url=url,
+            method='POST',
+            headers=headers,
+            body=json_data,
+        ))
+        app_log.info(f"Added {len(members_to_add)} users to JupyterHub")
 
-    # Check if the group exists in JupyterHub, create the group if needed
+    except Exception as e:
+        app_log.error(f"Error adding users to JupyterHub: {e}")
+    
+    # Remove the members from the group in JupyterHub
+    for member in members_to_remove:
+        try:
+            url = f"{jupyter_url}/hub/api/groups/{ldap_group}/users/{member}"
+            headers = {
+                'accept': 'application/json',
+                'Content-Type': 'application/json',
+                'authorization': f'token {token}',
+            }
+            response = await client.fetch(HTTPRequest(
+                url=url,
+                method='DELETE',
+                headers=headers,
+            ))
+            app_log.info(f"Removed {member} users from JupyterHub")
+        except Exception as e:
+            app_log.error(f"Error removing user {member} from JupyterHub: {e}")
 
-    url = f"https://jupyter.davidson.edu/hub/api/groups/{args.group}/users"
+async def sync_users(ldap_url, base_dn, ldap_username, ldap_password, ldap_group, jupyter_url, token, sync_every):
+    print("sync_users:", ldap_url, base_dn, ldap_username, ldap_password, ldap_group, jupyter_url, token, sync_every)
 
-    headers = {
-        'accept': 'application/json',
-        'Content-Type': 'application/json',
-        'authorization': f'token {config["token"]}',
-    }
+    # Get the group members from LDAP
+    members = await get_ldap_users(ldap_url, base_dn, ldap_username, ldap_password, ldap_group)
+    app_log.info(f"Found {len(members)} members in LDAP group '{ldap_group}'")
 
-    # json.dumps(users) does not work.  
-    json_data = { 'users': args.users[0].split(",") }  
-    response = requests.post(url, headers=headers, json=json_data)
+    # Check if JupyterHub is reachable
+    await test_jupyterhub_connection(jupyter_url, token)
 
-    if response.status_code == 201:
-        print("Successfully added users")
-    elif response.status_code == 400:
-        print("Failed to add users")
-        print(response.text)
-    elif response.status_code == 404:
-        print("Group not found")
-        print(response.text)
+    # Retrieve the group information from JupyterHub 
+    client = AsyncHTTPClient()
+    
+    # Check if the group exists in JupyterHub, if not create it.
+    await test_jupyterhub_group(jupyter_url, token, ldap_group, client)
+    
+    # Get the current members for the group
+    current_members = await get_current_group_members(jupyter_url, token, ldap_group, client)
 
+    # Check if the members are already in the group
+    members_to_add = list(set(members) - set(current_members))
+    members_to_remove = list(set(current_members) - set(members))
 
+    # Get all the users in JupyterHub
+    all_users = await get_all_users(jupyter_url, token, client)
+    
+    # Check if the users are already in JupyterHub
+    users_to_create = list(set(members_to_add) - set(all_users))
+
+    # Create users in JupyterHub if they don't exist
+    await create_users(jupyter_url, token, users_to_create, client)
+
+    # Add the members to the group in JupyterHub
+    await add_remove_users(jupyter_url, token, ldap_group, members_to_add, members_to_remove, client)
 
 def main():
     
@@ -197,19 +312,6 @@ def main():
             """
         ).strip(),
     )
-    define(
-        "concurrency",
-        type=int,
-        default=10,
-        help=dedent(
-            """
-            Limit the number of concurrent requests made to the Hub.
-
-            Deleting a lot of users at the same time can slow down the Hub,
-            so limit the number of API requests we have outstanding at any given time.
-            """
-        ).strip(),
-    )
 
     parse_command_line()
 
@@ -232,11 +334,9 @@ def main():
         jupyter_url=options.jupyter_url,
         token=options.token,
         sync_every=options.sync_every,
-        concurrency=options.concurrency,
     )
 
     print(sync)
-
     
     loop.add_callback(sync)
     pc = PeriodicCallback(sync, options.sync_every * 1000)
@@ -245,8 +345,6 @@ def main():
         loop.start()
     except KeyboardInterrupt:
         loop.stop()
-    
-
     
 if __name__ == "__main__":
     main()
