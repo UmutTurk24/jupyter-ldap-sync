@@ -1,6 +1,0 @@
-python3 __init__.py --base-dn="dc=davidson,dc=edu" --jupyter-url="https://jupyter.davidson.edu" --ldap-group="CSC250A_202402" --ldap-password="pinksportcoat" --ldap-username="Groovy" --token="a96dfa56e8744634bf0d1965dc637501"
-
-
-python3 __init__.py --base-dn="dc=davidson,dc=edu" --jupyter-url="https://jupyter.davidson.edu" --ldap-group="Jupyter_Admins" --ldap-password="pinksportcoat" --ldap-username="Groovy" --token="a96dfa56e8744634bf0d1965dc637501"
-
-Repo: https://test.pypi.org/project/jupyter-ldap-sync/0.1.0/
