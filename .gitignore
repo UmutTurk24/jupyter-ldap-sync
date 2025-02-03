@@ -1,1 +1,2 @@
-test-cmd.txt
+./test-cmd.txt
+.venv/
